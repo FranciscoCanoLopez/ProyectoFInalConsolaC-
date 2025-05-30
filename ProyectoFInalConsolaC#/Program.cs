@@ -160,77 +160,110 @@ internal class Program
         return filas;
     }
 
-    static async Task<List<Movie>> CargarDesdeAPI()
+    static async Task<List<Movie>> CargarDesdeAPI(int totalMovies = 1000)
     {
         var httpClient = new HttpClient();
         httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer",
-            "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkM2E5NDU5MmNjM2E5NDkwMWNhYjI2N" +
-            "zNmZWFhZGM4MiIsIm5iZiI6MTc0ODI4ODIzMy42NjQsInN1YiI6IjY4MzRjMmU5NjQwZTA1YjQyOGI2" +
-            "YmEwMiIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.ArYNRf2GqMDkot9TCd_5323QEN-XHpMVXfp1PxoNu4A");
+            "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkM2E5NDU5MmNjM2E5NDkwMWNhYjI2NzNmZWFhZGM4MiIsIm5iZiI6MTc0ODI4ODIzMy42NjQsInN1YiI6IjY4MzRjMmU" +
+            "5NjQwZTA1YjQyOGI2YmEwMiIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.ArYNRf2GqMDkot9TCd_5323QEN-XHpMVXfp1PxoNu4A");
 
-        var url = "https://api.themoviedb.org/3/movie/popular?language=es-ES&page=1";
+        int moviesPerPage = 20;
+        int pagesToRequest = (int)Math.Ceiling(totalMovies / (double)moviesPerPage);
 
-        try
+        var allMovies = new List<Movie>();
+
+        for (int page = 1; page <= pagesToRequest; page++)
         {
-            var response = await httpClient.GetStringAsync(url);
-            var json = JsonDocument.Parse(response);
+            var url = $"https://api.themoviedb.org/3/movie/popular?language=es-ES&page={page}";
 
-            var peliculas = json.RootElement
-                .GetProperty("results")
-                .EnumerateArray()
-                .Select(m => new Movie
-                {
-                    Title = m.GetProperty("title").GetString()!,
-                    VoteAverage = m.GetProperty("vote_average").GetDecimal(),
-                    VoteCount = m.GetProperty("vote_count").GetInt32(),
-                    Popularity = m.GetProperty("popularity").GetDecimal()
-                })
-                .ToList();
+            try
+            {
+                var response = await httpClient.GetStringAsync(url);
+                var json = JsonDocument.Parse(response);
 
-            return peliculas;
+                var peliculas = json.RootElement
+                    .GetProperty("results")
+                    .EnumerateArray()
+                    .Select(m => new Movie
+                    {
+                        Title = m.GetProperty("title").GetString()!,
+                        VoteAverage = m.GetProperty("vote_average").GetDecimal(),
+                        VoteCount = m.GetProperty("vote_count").GetInt32(),
+                        Popularity = m.GetProperty("popularity").GetDecimal()
+                    })
+                    .ToList();
+
+                allMovies.AddRange(peliculas);
+
+                if (allMovies.Count >= totalMovies)
+                    break;
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[red]Error al obtener datos de la API en página {page}: {ex.Message}[/]");
+                break;
+            }
         }
-        catch (Exception ex)
-        {
-            AnsiConsole.MarkupLine($"[red]Error al obtener datos de la API: {ex.Message}[/]");
-            return new List<Movie>();
-        }
+
+        return allMovies.Take(totalMovies).ToList();
     }
 
     // Mostrar tabla para datos API con paginación
     static void MostrarTablaAPI(List<Movie> movies)
     {
-        const int pageSize = 10;
-        int page = 0;
-        int totalPages = (int)Math.Ceiling((double)movies.Count / pageSize);
-
         while (true)
         {
             AnsiConsole.Clear();
-            var table = new Table().Border(TableBorder.Rounded);
-            table.AddColumn("[yellow]Nombre de la Película[/]");
+            AnsiConsole.MarkupLine("[bold]Ingrese texto para filtrar títulos (deje vacío para mostrar todo):[/]");
+            string filtro = Console.ReadLine() ?? "";
 
-            var paginated = movies
-                .Skip(page * pageSize)
-                .Take(pageSize)
+            var filtradas = movies
+                .Where(m => string.IsNullOrEmpty(filtro) || m.Title!.Contains(filtro, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
-            foreach (var movie in paginated)
+            if (filtradas.Count == 0)
             {
-                table.AddRow($"[white]{movie.Title}[/]");
+                AnsiConsole.MarkupLine("[red]No se encontraron películas que coincidan con el filtro.[/]");
+                AnsiConsole.MarkupLine("Presione cualquier tecla para intentar otro filtro...");
+                Console.ReadKey(true);
+                continue;
             }
 
-            AnsiConsole.Write(table);
-            AnsiConsole.MarkupLine($"[grey]Página {page + 1} de {totalPages}[/]");
-            AnsiConsole.MarkupLine("[blue]Use N para siguiente página, P para anterior, Esc para salir.[/]");
+            const int pageSize = 10;
+            int page = 0;
+            int totalPages = (int)Math.Ceiling((double)filtradas.Count / pageSize);
 
-            var key = Console.ReadKey(true).Key;
+            while (true)
+            {
+                AnsiConsole.Clear();
+                var table = new Table().Border(TableBorder.Rounded);
+                table.AddColumn("[yellow]Nombre de la Película[/]");
 
-            if (key == ConsoleKey.N && page < totalPages - 1)
-                page++;
-            else if (key == ConsoleKey.P && page > 0)
-                page--;
-            else if (key == ConsoleKey.Escape)
-                break;
+                var paginated = filtradas
+                    .Skip(page * pageSize)
+                    .Take(pageSize)
+                    .ToList();
+
+                foreach (var movie in paginated)
+                {
+                    table.AddRow($"[white]{movie.Title}[/]");
+                }
+
+                AnsiConsole.Write(table);
+                AnsiConsole.MarkupLine($"[grey]Página {page + 1} de {totalPages}[/]");
+                AnsiConsole.MarkupLine("[blue]Use N para siguiente página, P para anterior, F para nuevo filtro, Esc para salir.[/]");
+
+                var key = Console.ReadKey(true).Key;
+
+                if (key == ConsoleKey.N && page < totalPages - 1)
+                    page++;
+                else if (key == ConsoleKey.P && page > 0)
+                    page--;
+                else if (key == ConsoleKey.F)
+                    break; // Nuevo filtro
+                else if (key == ConsoleKey.Escape)
+                    return;
+            }
         }
     }
 
@@ -295,39 +328,62 @@ internal class Program
         string[] columnasMostrar = { "Season", "League", "Team", "Player", "Nation", "Position", "Age", "Match Played", "Goals", "Assists" };
         var columnasValidas = columnasMostrar.Where(c => rows.Any(r => r.Fields.ContainsKey(c))).ToArray();
 
-        const int pageSize = 10;
-        int page = 0;
-        int totalPages = (int)Math.Ceiling((double)rows.Count / pageSize);
-
         while (true)
         {
             AnsiConsole.Clear();
+            AnsiConsole.MarkupLine("[bold]Ingrese texto para filtrar (deje vacío para mostrar todo):[/]");
+            string filtro = Console.ReadLine() ?? "";
 
-            var table = new Table().Border(TableBorder.Rounded);
+            var filasFiltradas = rows.Where(row =>
+                columnasValidas.Any(col =>
+                    row.Fields.ContainsKey(col) &&
+                    row.Fields[col].Contains(filtro, StringComparison.OrdinalIgnoreCase)
+                )
+            ).ToList();
 
-            foreach (var col in columnasValidas)
-                table.AddColumn($"[bold yellow]{col}[/]");
-
-            var paginated = rows.Skip(page * pageSize).Take(pageSize);
-
-            foreach (var row in paginated)
+            if (filasFiltradas.Count == 0)
             {
-                var cells = columnasValidas.Select(h => $"[white]{(row.Fields.ContainsKey(h) ? row.Fields[h] : "")}[/]").ToArray();
-                table.AddRow(cells);
+                AnsiConsole.MarkupLine("[red]No se encontraron filas que coincidan con el filtro.[/]");
+                AnsiConsole.MarkupLine("Presione cualquier tecla para intentar otro filtro...");
+                Console.ReadKey(true);
+                continue;
             }
 
-            AnsiConsole.Write(table);
-            AnsiConsole.MarkupLine($"[grey]Página {page + 1} de {totalPages}[/]");
-            AnsiConsole.MarkupLine("[blue]Use ↑ ↓ para navegar, Esc para volver al menú.[/]");
+            const int pageSize = 10;
+            int page = 0;
+            int totalPages = (int)Math.Ceiling((double)filasFiltradas.Count / pageSize);
 
-            var key = Console.ReadKey(true).Key;
+            while (true)
+            {
+                AnsiConsole.Clear();
 
-            if (key == ConsoleKey.DownArrow && page < totalPages - 1)
-                page++;
-            else if (key == ConsoleKey.UpArrow && page > 0)
-                page--;
-            else if (key == ConsoleKey.Escape)
-                break;
+                var table = new Table().Border(TableBorder.Rounded);
+                foreach (var col in columnasValidas)
+                    table.AddColumn($"[bold yellow]{col}[/]");
+
+                var paginated = filasFiltradas.Skip(page * pageSize).Take(pageSize);
+
+                foreach (var row in paginated)
+                {
+                    var cells = columnasValidas.Select(h => $"[white]{(row.Fields.ContainsKey(h) ? row.Fields[h] : "")}[/]").ToArray();
+                    table.AddRow(cells);
+                }
+
+                AnsiConsole.Write(table);
+                AnsiConsole.MarkupLine($"[grey]Página {page + 1} de {totalPages}[/]");
+                AnsiConsole.MarkupLine("[blue]Use ↑ ↓ para navegar páginas, F para nuevo filtro, Esc para salir.[/]");
+
+                var key = Console.ReadKey(true).Key;
+
+                if (key == ConsoleKey.DownArrow && page < totalPages - 1)
+                    page++;
+                else if (key == ConsoleKey.UpArrow && page > 0)
+                    page--;
+                else if (key == ConsoleKey.F)
+                    break; // Salir para ingresar nuevo filtro
+                else if (key == ConsoleKey.Escape)
+                    return;
+            }
         }
     }
 
