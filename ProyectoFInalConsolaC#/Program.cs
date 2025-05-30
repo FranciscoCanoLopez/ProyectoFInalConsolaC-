@@ -10,6 +10,9 @@ using ProyectoFInalConsolaC_;
 using System.Reflection.PortableExecutable;
 using static System.Runtime.InteropServices.JavaScript.JSType;
 using System.Globalization;
+using QuestPDF.Fluent;
+using QuestPDF.Helpers;
+using CsvHelper;
 
 internal class Program
 {
@@ -496,7 +499,7 @@ internal class Program
         var formato = AnsiConsole.Prompt(
             new SelectionPrompt<string>()
                 .Title("Selecciona el [green]formato de exportación[/]:")
-                .AddChoices("CSV", "TXT", "XML", "JSON")
+                .AddChoices("CSV", "TXT", "XML", "JSON", "PDF")
         );
 
         string ruta = AnsiConsole.Ask<string>("Ingresa la ruta y nombre del archivo (sin extensión):");
@@ -516,6 +519,9 @@ internal class Program
                     break;
                 case "JSON":
                     ExportarAJSON(jugadores, ruta + ".json");
+                    break;
+                case "PDF":
+                    ExportarAPDF(jugadores, ruta + ".pdf");
                     break;
             }
 
@@ -554,7 +560,8 @@ internal class Program
             Console.WriteLine("2. Exportar a JSON");
             Console.WriteLine("3. Exportar a TXT");
             Console.WriteLine("4. Exportar a XML");
-            Console.WriteLine("5. Volver al menú principal");
+            Console.WriteLine("5. Exportar a PDF");
+            Console.WriteLine("6. Volver al menú principal");
 
             Console.Write("\nSeleccione una opción: ");
             string opcion = Console.ReadLine()!;
@@ -574,6 +581,9 @@ internal class Program
                     ExportarAXML(csvRows, "export_api.xml");
                     break;
                 case "5":
+                    ExportarAPDF(csvRows, "export_api.pdf");
+                    break;
+                case "6":
                     return;
                 default:
                     Console.WriteLine("Opción inválida. Presione una tecla para continuar...");
@@ -711,5 +721,78 @@ internal class Program
         }
 
         Console.ReadKey(true);
+    }
+    static void ExportarAPDF(List<CsvRow> datos, string ruta)
+    {
+        try
+        {
+            if (datos == null || datos.Count == 0)
+            {
+                AnsiConsole.MarkupLine("[red]No hay datos para exportar.[/]");
+                Console.ReadKey(true);
+                return;
+            }
+
+            var headers = datos[0].Fields.Keys.ToList();
+
+            var document = Document.Create(container =>
+            {
+                container.Page(page =>
+                {
+                    page.Margin(20);
+                    page.Header()
+                        .Text("Reporte de Jugadores")
+                        .SemiBold().FontSize(20).FontColor(Colors.Blue.Medium);
+
+                    page.Content()
+                        .Table(table =>
+                        {
+                            // Define columns count
+                            table.ColumnsDefinition(columns =>
+                            {
+                                foreach (var _ in headers)
+                                    columns.RelativeColumn();
+                            });
+
+                            // Header row
+                            table.Header(header =>
+                            {
+                                foreach (var headerName in headers)
+                                    header.Cell().Background(Colors.Grey.Lighten2).Padding(5).Text(headerName).SemiBold();
+                            });
+
+                            // Data rows
+                            foreach (var fila in datos)
+                            {
+                                foreach (var headerName in headers)
+                                {
+                                    fila.Fields.TryGetValue(headerName, out var value);
+                                    table.Cell().BorderBottom(1).BorderColor(Colors.Grey.Lighten2).Padding(5).Text(value ?? "");
+                                }
+                            }
+                        });
+
+                    page.Footer()
+                        .AlignCenter()
+                        .Text(x =>
+                        {
+                            x.Span("Página ");
+                            x.CurrentPageNumber();
+                            x.Span(" de ");
+                            x.TotalPages();
+                        });
+                });
+            });
+
+            document.GeneratePdf(ruta);
+
+            AnsiConsole.MarkupLine($"[green]Datos exportados exitosamente a PDF: {ruta}[/]");
+            PreguntarYEnviarCorreo(ruta);
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Error al exportar a PDF: {ex.Message}[/]");
+            Console.ReadKey(true);
+        }
     }
 }
