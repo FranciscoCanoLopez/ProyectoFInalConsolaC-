@@ -13,6 +13,9 @@ using System.Globalization;
 using QuestPDF.Fluent;
 using QuestPDF.Helpers;
 using CsvHelper;
+using System.Data.SqlClient;
+using QuestPDF.Infrastructure;
+using MimeKit;
 
 internal class Program
 {
@@ -22,6 +25,8 @@ internal class Program
 
         List<CsvRow> datosCSV = new();
         List<Movie> datosAPI = new();
+
+        QuestPDF.Settings.License = LicenseType.Community;
 
         while (true)
         {
@@ -44,6 +49,11 @@ internal class Program
                 datosAPI = await CargarDesdeAPI();
                 MostrarSubmenuAPI(datosAPI);
             }
+            else if (opcion == ConsoleKey.C)
+            {
+                var datosDB = CargarDesdeBaseDeDatos();
+                MostrarSubmenuBD(datosDB);
+            }
             else
             {
                 AnsiConsole.MarkupLine("[red]Opción inválida. Intenta nuevamente.[/]");
@@ -54,13 +64,14 @@ internal class Program
     static void MostrarMenu()
     {
         AnsiConsole.Clear();
-        var titulo = new FigletText("Opciones").Color(Color.Magenta1);
+        var titulo = new FigletText("Opciones").Color(Spectre.Console.Color.Magenta1);
         AnsiConsole.Write(titulo);
 
         var contenido = new Markup(
             "\n[bold underline white]Seleccione el origen de datos[/]\n\n" +
             "[bold magenta]A[/]: [white]Archivo CSV[/]\n" +
             "[bold magenta]B[/]: [white]Datos desde TheMovieDB API[/]\n" +
+            "[bold magenta]C[/]: [white]Datos desde Base de Datos[/]\n" +
             "[bold magenta]ESC[/]: [white]Salir[/]");
 
         var panel = new Panel(contenido)
@@ -116,7 +127,43 @@ internal class Program
             }
         }
     }
+    static List<CsvRow> CargarDesdeBaseDeDatos()
+    {
+        string connectionString = @"Server=localhost\SQLEXPRESS;Database=TopChessPlayer;Trusted_connection=yes;TrustServerCertificate=true";
+        string query = "SELECT TOP 50000 * FROM top_chess_players_aug_2020;";
+        var filas = new List<CsvRow>();
 
+        try
+        {
+            using var connection = new SqlConnection(connectionString);
+            connection.Open();
+
+            using var command = new SqlCommand(query, connection);
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                var row = new CsvRow();
+
+                for (int i = 0; i < reader.FieldCount; i++)
+                {
+                    string columnName = reader.GetName(i);
+                    string value = reader.IsDBNull(i) ? "" : reader.GetValue(i).ToString() ?? "";
+                    row.Fields[columnName] = value;
+                }
+
+                filas.Add(row);
+            }
+
+            AnsiConsole.MarkupLine($"[green]Filas cargadas desde base de datos: {filas.Count}[/]");
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Error al leer datos de SQL Server: {ex.Message}[/]");
+        }
+
+        return filas;
+    }
     static List<CsvRow> CargarDesdeCSV()
     {
         var rutaArchivo = @"C:\Users\volub\Downloads\archive\stats_football_players.csv";
@@ -211,30 +258,161 @@ internal class Program
         return allMovies.Take(totalMovies).ToList();
     }
 
-    // Mostrar tabla para datos API con paginación
-    static void MostrarTablaAPI(List<Movie> movies)
+    static void MostrarSubmenuBD(List<CsvRow> datos)
     {
         while (true)
         {
             AnsiConsole.Clear();
-            AnsiConsole.MarkupLine("[bold]Ingrese texto para filtrar títulos (deje vacío para mostrar todo):[/]");
-            string filtro = Console.ReadLine() ?? "";
+            var submenu = new SelectionPrompt<string>()
+                .Title("[bold]Selecciona la vista de los datos BD:[/]")
+                .AddChoices("Tabla", "Árbol", "Estadísticas", "Exportar", "Volver al menú principal");
 
-            var filtradas = movies
-                .Where(m => string.IsNullOrEmpty(filtro) || m.Title!.Contains(filtro, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            var seleccion = AnsiConsole.Prompt(submenu);
 
-            if (filtradas.Count == 0)
+            switch (seleccion)
             {
-                AnsiConsole.MarkupLine("[red]No se encontraron películas que coincidan con el filtro.[/]");
-                AnsiConsole.MarkupLine("Presione cualquier tecla para intentar otro filtro...");
-                Console.ReadKey(true);
-                continue;
+                case "Tabla": MostrarTablaBaseDeDatos(datos); break;
+                case "Árbol": MostrarArbolBaseDeDatos(datos); break;
+                case "Estadísticas": MostrarEstadisticasBaseDeDatos(datos); break;
+                case "Exportar": MostrarMenuExportacion(datos); break;
+                case "Volver al menú principal": return;
+            }
+        }
+    }
+    // mostrar base de datos
+    static void MostrarTablaBaseDeDatos(List<CsvRow> rows)
+    {
+        string[] columnasMostrar = {
+        "Fideid", "Name", "Federation", "Gender", "Year_of_birth",
+        "Title", "Standard_Rating", "Rapid_rating", "Blitz_rating", "Inactive_flag"
+    };
+
+        const int pageSize = 10;
+        int page = 0;
+        int totalPages = (int)Math.Ceiling((double)rows.Count / pageSize);
+
+        while (true)
+        {
+            AnsiConsole.Clear();
+
+            var table = new Table().Border(TableBorder.Rounded);
+            foreach (var col in columnasMostrar)
+                table.AddColumn($"[bold yellow]{col}[/]");
+
+            var paginated = rows.Skip(page * pageSize).Take(pageSize);
+
+            foreach (var row in paginated)
+            {
+                var cells = columnasMostrar.Select(h => $"[white]{(row.Fields.ContainsKey(h) ? row.Fields[h] : "")}[/]").ToArray();
+                table.AddRow(cells);
             }
 
+            AnsiConsole.Write(table);
+            AnsiConsole.MarkupLine($"[grey]Página {page + 1} de {totalPages}[/]");
+            AnsiConsole.MarkupLine("[blue]Use ↑ ↓ para navegar páginas, Esc para salir.[/]");
+
+            var key = Console.ReadKey(true).Key;
+
+            if (key == ConsoleKey.DownArrow && page < totalPages - 1)
+                page++;
+            else if (key == ConsoleKey.UpArrow && page > 0)
+                page--;
+            else if (key == ConsoleKey.Escape)
+                return;
+        }
+    }
+    static void MostrarArbolBaseDeDatos(List<CsvRow> rows)
+    {
+        const int pageSize = 1;
+        int page = 0;
+        int totalPages = (int)Math.Ceiling((double)rows.Count / pageSize);
+
+        while (true)
+        {
+            AnsiConsole.Clear();
+
+            var paginated = rows.Skip(page * pageSize).Take(pageSize).ToList();
+
+            foreach (var jugador in paginated)
+            {
+                if (!jugador.Fields.ContainsKey("Name")) continue;
+
+                var root = new Tree($"[bold yellow]{jugador.Fields["Name"]}[/]").Style(Style.Parse("blue"));
+                foreach (var kvp in jugador.Fields)
+                {
+                    if (kvp.Key == "Name") continue;
+                    root.AddNode($"[white]{kvp.Key}[/]: [cyan]{kvp.Value}[/]");
+                }
+                AnsiConsole.Write(root);
+                AnsiConsole.WriteLine();
+            }
+
+            AnsiConsole.MarkupLine($"[grey]Página {page + 1} de {totalPages}[/]");
+            AnsiConsole.MarkupLine("[blue]Use ↑ ↓ para navegar, Esc para volver al menú.[/]");
+
+            var key = Console.ReadKey(true).Key;
+
+            if (key == ConsoleKey.DownArrow && page < totalPages - 1)
+                page++;
+            else if (key == ConsoleKey.UpArrow && page > 0)
+                page--;
+            else if (key == ConsoleKey.Escape)
+                break;
+        }
+    }
+    static void MostrarEstadisticasBaseDeDatos(List<CsvRow> jugadores)
+    {
+        int index = 0;
+
+        while (true)
+        {
+            AnsiConsole.Clear();
+
+            if (jugadores.Count == 0)
+            {
+                AnsiConsole.MarkupLine("[red]No hay datos para mostrar.[/]");
+                return;
+            }
+
+            var jugador = jugadores[index];
+            string nombre = jugador.Fields.GetValueOrDefault("Name", "Desconocido");
+
+            int std = int.TryParse(jugador.Fields.GetValueOrDefault("Standard_Rating", "0"), out int s) ? s : 0;
+            int rapid = int.TryParse(jugador.Fields.GetValueOrDefault("Rapid_rating", "0"), out int r) ? r : 0;
+            int blitz = int.TryParse(jugador.Fields.GetValueOrDefault("Blitz_rating", "0"), out int b) ? b : 0;
+
+            var chart = new BarChart()
+                .Width(60)
+                .Label($"[bold yellow]{nombre}[/]")
+                .CenterLabel()
+                .AddItem("Standard", std, Spectre.Console.Color.Green)
+                .AddItem("Rapid", rapid, Spectre.Console.Color.Orange1)
+                .AddItem("Blitz", blitz, Spectre.Console.Color.Blue);
+
+            AnsiConsole.Write(chart);
+
+            AnsiConsole.MarkupLine($"\n[grey]Jugador {index + 1} de {jugadores.Count}[/]");
+            AnsiConsole.MarkupLine("[blue]Use ← → para cambiar jugador. Esc para volver.[/]");
+
+            var key = Console.ReadKey(true).Key;
+
+            if (key == ConsoleKey.RightArrow)
+                index = (index + 1) % jugadores.Count;
+            else if (key == ConsoleKey.LeftArrow)
+                index = (index - 1 + jugadores.Count) % jugadores.Count;
+            else if (key == ConsoleKey.Escape)
+                break;
+        }
+    }
+
+    // Mostrar datos API 
+    static void MostrarTablaAPI(List<Movie> movies)
+    {
+        while (true)
+        {
             const int pageSize = 10;
             int page = 0;
-            int totalPages = (int)Math.Ceiling((double)filtradas.Count / pageSize);
+            int totalPages = (int)Math.Ceiling((double)movies.Count / pageSize);
 
             while (true)
             {
@@ -242,7 +420,7 @@ internal class Program
                 var table = new Table().Border(TableBorder.Rounded);
                 table.AddColumn("[yellow]Nombre de la Película[/]");
 
-                var paginated = filtradas
+                var paginated = movies
                     .Skip(page * pageSize)
                     .Take(pageSize)
                     .ToList();
@@ -254,7 +432,7 @@ internal class Program
 
                 AnsiConsole.Write(table);
                 AnsiConsole.MarkupLine($"[grey]Página {page + 1} de {totalPages}[/]");
-                AnsiConsole.MarkupLine("[blue]Use N para siguiente página, P para anterior, F para nuevo filtro, Esc para salir.[/]");
+                AnsiConsole.MarkupLine("[blue]Use N para siguiente página, P para anterior, Esc para salir.[/]");
 
                 var key = Console.ReadKey(true).Key;
 
@@ -262,8 +440,6 @@ internal class Program
                     page++;
                 else if (key == ConsoleKey.P && page > 0)
                     page--;
-                else if (key == ConsoleKey.F)
-                    break; // Nuevo filtro
                 else if (key == ConsoleKey.Escape)
                     return;
             }
@@ -272,17 +448,41 @@ internal class Program
 
     static void MostrarArbolAPI(List<Movie> movies)
     {
-        foreach (var movie in movies)
+        if (movies == null || movies.Count == 0)
         {
+            AnsiConsole.MarkupLine("[red]No hay películas para mostrar.[/]");
+            return;
+        }
+
+        int index = 0;
+        ConsoleKeyInfo key;
+
+        do
+        {
+            Console.Clear();
+            var movie = movies[index];
             var tree = new Tree($"[bold yellow]{movie.Title}[/]").Style(Style.Parse("blue"));
             tree.AddNode($"[white]Popularidad[/]: [cyan]{movie.Popularity}[/]");
             tree.AddNode($"[white]Votos promedio[/]: [cyan]{movie.VoteAverage}[/]");
             tree.AddNode($"[white]Número de votos[/]: [cyan]{movie.VoteCount}[/]");
             AnsiConsole.Write(tree);
             AnsiConsole.WriteLine();
-        }
-        AnsiConsole.MarkupLine("[blue]Presione una tecla para continuar...[/]");
-        Console.ReadKey(true);
+
+            AnsiConsole.MarkupLine("[blue]Use ← y → para navegar, Esc para salir.[/]");
+            key = Console.ReadKey(true);
+
+            if (key.Key == ConsoleKey.RightArrow)
+            {
+                index = (index + 10) % movies.Count; // siguiente película, vuelve al inicio si llega al final
+            }
+            else if (key.Key == ConsoleKey.LeftArrow)
+            {
+                index = (index - 10 + movies.Count) % movies.Count; // anterior película, vuelve al final si está en 0
+            }
+
+        } while (key.Key != ConsoleKey.Escape);
+
+        Console.Clear();
     }
 
     static void MostrarEstadisticasAPI(List<Movie> movies)
@@ -305,9 +505,9 @@ internal class Program
                 .Width(60)
                 .Label($"[bold yellow]{movie.Title}[/]")
                 .CenterLabel()
-                .AddItem("Popularidad", (float)movie.Popularity, Color.Blue)
-                .AddItem("Voto Promedio", (float)movie.VoteAverage, Color.Green)
-                .AddItem("Votos", movie.VoteCount, Color.Orange1);
+                .AddItem("Popularidad", (float)movie.Popularity, Spectre.Console.Color.Blue)
+                .AddItem("Voto Promedio", (float)movie.VoteAverage, Spectre.Console.Color.Green)
+                .AddItem("Votos", movie.VoteCount, Spectre.Console.Color.Orange1);
 
             AnsiConsole.Write(chart);
 
@@ -325,8 +525,8 @@ internal class Program
         }
     }
 
-    // Mostrar tabla CSV con paginación
-    static void MostrarTablaCSV(List<CsvRow> rows)
+    // Mostrar CSV
+    static void MostrarTablaCSV(List<CsvRow> rows) 
     {
         string[] columnasMostrar = { "Season", "League", "Team", "Player", "Nation", "Position", "Age", "Match Played", "Goals", "Assists" };
         var columnasValidas = columnasMostrar.Where(c => rows.Any(r => r.Fields.ContainsKey(c))).ToArray();
@@ -465,11 +665,11 @@ internal class Program
                 .Width(60)
                 .Label($"[bold yellow]Estadísticas de {nombre}[/]")
                 .CenterLabel()
-                .AddItem("Partidos", partidos, Color.Blue)
-                .AddItem("Goles", goles, Color.Green)
-                .AddItem("Asistencias", asistencias, Color.Orange1)
-                .AddItem("Amarillas", amarillas, Color.Yellow)
-                .AddItem("Rojas", rojas, Color.Red);
+                .AddItem("Partidos", partidos, Spectre.Console.Color.Blue)
+                .AddItem("Goles", goles, Spectre.Console.Color.Green)
+                .AddItem("Asistencias", asistencias, Spectre.Console.Color.Orange1)
+                .AddItem("Amarillas", amarillas,    Spectre.Console.Color.Yellow)
+                .AddItem("Rojas", rojas, Spectre.Console.Color.Red);
 
             AnsiConsole.Write(chart);
 
@@ -702,13 +902,40 @@ internal class Program
         if (respuesta == "s" || respuesta == "si")
         {
             AnsiConsole.MarkupLine("Ingresa el correo electrónico destinatario:");
-            var correo = Console.ReadLine()?.Trim();
+            var destinatario = Console.ReadLine()?.Trim();
 
-            if (!string.IsNullOrEmpty(correo))
+            if (!string.IsNullOrEmpty(destinatario))
             {
-                // Aquí puedes implementar el envío real de correo.
-                // Por ahora solo simulo el envío:
-                AnsiConsole.MarkupLine($"[green]Archivo '{rutaArchivo}' enviado a {correo} (simulado).[/]");
+                try
+                {
+                    var mensaje = new MimeMessage();
+                    mensaje.From.Add(new MailboxAddress("App Estadística", "elcomparosh97@gmail.com"));
+                    mensaje.To.Add(MailboxAddress.Parse(destinatario));
+                    mensaje.Subject = "Archivo exportado";
+
+                    var builder = new BodyBuilder
+                    {
+                        TextBody = "Se adjunta el archivo exportado desde la aplicación.",
+                    };
+
+                    builder.Attachments.Add(rutaArchivo);
+                    mensaje.Body = builder.ToMessageBody();
+
+                    using var cliente = new MailKit.Net.Smtp.SmtpClient();
+                    cliente.Connect("smtp.gmail.com", 587, MailKit.Security.SecureSocketOptions.StartTls);
+
+                    // Autenticación del remitente
+                    cliente.Authenticate("elcomparosh97@gmail.com", "kecp sfqy aosh jpjj"); // Usa clave de aplicación, no tu contraseña
+
+                    cliente.Send(mensaje);
+                    cliente.Disconnect(true);
+
+                    AnsiConsole.MarkupLine($"[green]Archivo enviado exitosamente a {destinatario}.[/]");
+                }
+                catch (Exception ex)
+                {
+                    AnsiConsole.MarkupLine($"[red]Error al enviar correo: {ex.Message}[/]");
+                }
             }
             else
             {
